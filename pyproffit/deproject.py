@@ -228,7 +228,9 @@ def Deproject_Multiscale(deproj,bkglim=None,nmcmc=1000,back=None,samplefile=None
         samples = np.append(sampc, sampb, axis=1)      
     else:
         import pystan
-        if not os.path.isfile('mybeta_gauss.stan'):
+        import stan_utility as su
+        
+        if not os.path.isfile('mybeta_GP.stan'): # write and compile code if not already present
             code='''
             data {
             int<lower=0> N;
@@ -255,7 +257,7 @@ def Deproject_Multiscale(deproj,bkglim=None,nmcmc=1000,back=None,samplefile=None
             f=open('mybeta_GP.stan','w')
             print(code,file=f)
             f.close()
-            sm = su.compile_model('mybeta_gauss.stan',model_name='model')
+            sm = su.compile_model('mybeta_gauss.stan',model_name='model_GP')
             
         depth=10
         datas=dict(K=K, cts_tot=counts.astype(int), cts_back=bkgcounts, N=K.shape[0],M=K.shape[1], norm0=np.append(testval,testbkg))
