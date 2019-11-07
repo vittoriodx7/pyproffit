@@ -1,6 +1,5 @@
 from astropy.cosmology import WMAP9 as cosmo
 import numpy as np
-import pymc3 as pm
 import time
 from scipy.special import gamma
 import matplotlib.pyplot as plt
@@ -150,7 +149,7 @@ def calc_density_operator(rad,sourcereg,pars,z):
     return Ktot
 
 
-def Deproject_Multiscale(deproj,bkglim=None,nmcmc=1000,back=None,samplefile=None,nrc=None,nbetas=6):
+def Deproject_Multiscale(deproj,bkglim=None,nmcmc=1000,back=None,samplefile=None,nrc=None,nbetas=6,use_stan=False):
     prof = deproj.profile
     sb = prof.profile
     rad = prof.bins
@@ -187,7 +186,6 @@ def Deproject_Multiscale(deproj,bkglim=None,nmcmc=1000,back=None,samplefile=None
 
     # Compute linear combination kernel
     K = calc_linear_operator(rad, sourcereg, pars, area, exposure, psfmat)
-    basic_model = pm.Model()
     if np.isnan(sb[0]) or sb[0] <= 0:
         testval = -10.
     else:
@@ -196,34 +194,84 @@ def Deproject_Multiscale(deproj,bkglim=None,nmcmc=1000,back=None,samplefile=None
         testbkg = -10.
     else:
         testbkg = np.log(back)
+     
+    
+    if use_stan == False:
+        import pymc3 as pm
+        basic_model = pm.Model()
 
-    with basic_model:
-        # Priors for unknown model parameters
-        coefs = pm.Normal('coefs', mu=testval, sd=20, shape=npt)
-        bkgd = pm.Normal('bkg', mu=testbkg, sd=0.05, shape=1)
-        ctot = pm.math.concatenate((coefs, bkgd), axis=0)
 
-        # Expected value of outcome
-        al = pm.math.exp(ctot)
-        pred = pm.math.dot(K, al) + bkgcounts
+        with basic_model:
+            # Priors for unknown model parameters
+            coefs = pm.Normal('coefs', mu=testval, sd=20, shape=npt)
+            bkgd = pm.Normal('bkg', mu=testbkg, sd=0.05, shape=1)
+            ctot = pm.math.concatenate((coefs, bkgd), axis=0)
 
-        # Likelihood (sampling distribution) of observations
-        Y_obs = pm.Poisson('counts', mu=pred, observed=counts)
+            # Expected value of outcome
+            al = pm.math.exp(ctot)
+            pred = pm.math.dot(K, al) + bkgcounts
 
-    tinit = time.time()
-    print('Running MCMC...')
-    with basic_model:
-        #tm = pm.find_MAP()
-        #trace = pm.sample(nmcmc, start=tm)
-        trace = pm.sample(nmcmc)
-    print('Done.')
-    tend = time.time()
-    print(' Total computing time is: ', (tend - tinit) / 60., ' minutes')
+            # Likelihood (sampling distribution) of observations
+            Y_obs = pm.Poisson('counts', mu=pred, observed=counts)
 
+        tinit = time.time()
+        print('Running MCMC...')
+        with basic_model:
+            #tm = pm.find_MAP()
+            #trace = pm.sample(nmcmc, start=tm)
+            trace = pm.sample(nmcmc)
+        print('Done.')
+        tend = time.time()
+        print(' Total computing time is: ', (tend - tinit) / 60., ' minutes')
+        sampc = trace.get_values('coefs')
+        sampb = trace.get_values('bkg')
+        samples = np.append(sampc, sampb, axis=1)      
+    else:
+        import pystan
+        if not os.path.isfile('mybeta_gauss.stan'):
+            code='''
+            data {
+            int<lower=0> N;
+            int<lower=0> M;
+            int cts_tot[N];
+            vector[N] cts_back;
+            matrix[N,M] K;
+            vector[M] norm0;
+            }
+
+            parameters {
+            vector[M] log_norm;
+            }
+
+            transformed parameters{
+            vector[M] norm = exp(log_norm);
+            }
+
+            model {
+            log_norm ~ normal(norm0,10);
+
+            cts_tot ~ poisson(K * norm + cts_back);
+            }'''
+            f=open('mybeta_GP.stan','w')
+            print(code,file=f)
+            f.close()
+            sm = su.compile_model('mybeta_gauss.stan',model_name='model')
+            
+        depth=10
+        datas=dict(K=K, cts_tot=counts.astype(int), cts_back=bkgcounts, N=K.shape[0],M=K.shape[1], norm0=np.append(testval,testbkg))
+        tinit = time.time()
+        print('Running MCMC...')
+        fit = sm.sampling(data=datas,chains=1,iter=nmcmc,thin=1,n_jobs=1, control={'max_treedepth':depth})
+        print('Done.')
+        tend = time.time()
+        print(' Total computing time is: ', (tend - tinit) / 60., ' minutes')            
+        chain = fit.extract()
+        samples=chain['log_norm']           
+            
+            
+            
     # Get chains and save them to file
-    sampc = trace.get_values('coefs')
-    sampb = trace.get_values('bkg')
-    samples = np.append(sampc, sampb, axis=1)
+
     if samplefile is not  None:
         np.savetxt(samplefile, samples)
 
